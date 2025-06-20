@@ -91,18 +91,25 @@ function App() {
    dispatch({ type: 'SET_ID', payload: id });
   };
 
-  const getCode = (item, codeType, isAlvs = true) => {
+ const getCode = (item, codeType, isAlvs = true) => {
     const checkKey = isAlvs ? 'Check' : 'NS2:Check';
     const codeKey = isAlvs ? codeType : `NS2:${codeType}`;
+    const decisionCodeKey = isAlvs ? 'DecisionCode' : 'NS2:DecisionCode';
 
-    const check = item[checkKey] && item[checkKey][0];
-    if (!check) {
-      return 'N/A';
+    const checks = item[checkKey];
+    if (!checks || !Array.isArray(checks)) {
+      return [{ checkCode: 'N/A', decisionCode: 'N/A' }];
     }
 
-    const code = check[codeKey] && check[codeKey][0];
-    const checkCode = code || 'N/A';
-    return `${checkCode} - ${checkCodeMapping[checkCode] || 'N/A'}`;
+    return checks.map(check => {
+      const code = check[codeKey] && check[codeKey][0];
+      const checkCode = code || 'N/A';
+      const decisionCode = check[decisionCodeKey] && check[decisionCodeKey][0] || 'N/A';
+      return {
+        checkCode: `${checkCode} - ${checkCodeMapping[checkCode] || 'N/A'}`,
+        decisionCode: decisionCode
+      };
+    });
   };
 
   const compareData = (alvs, btms) => {
@@ -119,39 +126,36 @@ function App() {
       if (alvsItems && btmsItems) {
         alvsItems.forEach((alvsItem) => {
           const itemNumber = alvsItem.ItemNumber ? alvsItem.ItemNumber[0] : 'N/A';
-          const alvsCheckCode = getCode(alvsItem, 'CheckCode', true);
-          const alvsDecisionCode = alvsItem.Check && alvsItem.Check[0] && alvsItem.Check[0].DecisionCode ? alvsItem.Check[0].DecisionCode[0] : 'N/A';
+          const alvsCheckCodeObjects = getCode(alvsItem, 'CheckCode', true);
 
           let btmsItem = null;
           if (btmsItems) {
             btmsItem = btmsItems.find((btmsItem) => btmsItem['NS2:ItemNumber'] && btmsItem['NS2:ItemNumber'][0] === itemNumber);
 
-            let btmsCheckCode = 'N/A';
-            let btmsDecisionCode = 'N/A';
-            let match = false;
+            let btmsCheckCodeObjects = [{ checkCode: 'N/A', decisionCode: 'N/A' }];
 
             if (btmsItem) {
-              btmsCheckCode = getCode(btmsItem, 'CheckCode', false);
-              btmsDecisionCode = btmsItem['NS2:Check'] && btmsItem['NS2:Check'][0] && btmsItem['NS2:Check'][0]['NS2:DecisionCode'] ? btmsItem['NS2:Check'][0]['NS2:DecisionCode'][0] : 'N/A';
-              match = alvsDecisionCode === btmsDecisionCode;
+              btmsCheckCodeObjects = getCode(btmsItem, 'CheckCode', false);
             }
+
+            // Determine match for each check
+            const matches = alvsCheckCodeObjects.map((alvsCheck, index) => {
+              const btmsCheck = btmsCheckCodeObjects[index] || { decisionCode: 'N/A' };
+              return alvsCheck.decisionCode === btmsCheck.decisionCode;
+            });
 
             results.push({
               itemNumber: itemNumber,
-              alvsCheckCode: alvsCheckCode,
-              alvsDecisionCode: alvsDecisionCode,
-              btmsCheckCode: btmsCheckCode,
-              btmsDecisionCode: btmsDecisionCode,
-              match: match,
+              alvsCheckCodeObjects: alvsCheckCodeObjects,
+              btmsCheckCodeObjects: btmsCheckCodeObjects,
+              matches: matches, // Store the array of matches
             });
           } else {
             results.push({
               itemNumber: itemNumber,
-              alvsCheckCode: alvsCheckCode,
-              alvsDecisionCode: alvsDecisionCode,
-              btmsCheckCode: 'N/A',
-              btmsDecisionCode: 'N/A',
-              match: false,
+              alvsCheckCodeObjects: alvsCheckCodeObjects,
+              btmsCheckCodeObjects: [{ checkCode: 'N/A', decisionCode: 'N/A' }],
+              matches: [],
             });
           }
         });
@@ -184,28 +188,39 @@ function App() {
         <div>
           <h2>Comparison Results for {id}</h2>
           <table>
-          <thead>
-            <tr>
-              <th>Item Number</th>
-              <th>ALVS Check Code</th>
-              <th>ALVS Decision Code</th>
-              <th>BTMS Check Code</th>
-              <th>BTMS Decision Code</th>
-              <th>Match</th>
-            </tr>
-          </thead>
-          <tbody>
-            {comparisonResults.map((result, index) => (
-              <tr key={index}>
-                <td>{result.itemNumber}</td>
-                <td>{result.alvsCheckCode}</td>
-                <td>{result.alvsDecisionCode}</td>
-                <td>{result.btmsCheckCode}</td>
-                <td>{result.btmsDecisionCode}</td>
-                <td className={result.match ? 'match-true' : 'match-false'}>{result.match ? 'True' : 'False'}</td>
+            <thead>
+              <tr>
+                <th>Item Number</th>
+                <th>ALVS Check Code</th>
+                <th>ALVS Decision Code</th>
+                <th>BTMS Check Code</th>
+                <th>BTMS Decision Code</th>
+                <th>Match</th>
               </tr>
-            ))}
-          </tbody>
+            </thead>
+            <tbody>
+              {comparisonResults.map((result, index) => {
+                const alvsCheckCodeObjects = result.alvsCheckCodeObjects || [];
+                const btmsCheckCodeObjects = result.btmsCheckCodeObjects || [];
+                const matches = result.matches || [];
+
+                return alvsCheckCodeObjects.map((alvsCheck, checkIndex) => {
+                  const btmsCheck = btmsCheckCodeObjects[checkIndex] || { checkCode: 'N/A', decisionCode: 'N/A' };
+                  const match = matches[checkIndex];
+
+                  return (
+                    <tr key={`${index}-${checkIndex}`}>
+                      <td>{result.itemNumber}</td>
+                      <td>{alvsCheck.checkCode}</td>
+                      <td>{alvsCheck.decisionCode}</td>
+                      <td>{btmsCheck.checkCode}</td>
+                      <td>{btmsCheck.decisionCode}</td>
+                      <td className={match ? 'match-true' : 'match-false'}>{match ? 'True' : 'False'}</td>
+                    </tr>
+                  );
+                });
+              })}
+            </tbody>
           </table>
         </div>
       )}
