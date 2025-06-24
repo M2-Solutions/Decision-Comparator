@@ -87,11 +87,7 @@ function App() {
     }
   };
 
-  const setId = (id) => {
-   dispatch({ type: 'SET_ID', payload: id });
-  };
-
- const getCode = (item, codeType, isAlvs = true) => {
+  const getCode = (item, codeType, isAlvs = true) => {
     const checkKey = isAlvs ? 'Check' : 'NS2:Check';
     const codeKey = isAlvs ? codeType : `NS2:${codeType}`;
     const decisionCodeKey = isAlvs ? 'DecisionCode' : 'NS2:DecisionCode';
@@ -104,7 +100,7 @@ function App() {
     return checks.map(check => {
       const code = check[codeKey] && check[codeKey][0];
       const checkCode = code || 'N/A';
-      const decisionCode = check[decisionCodeKey] && check[decisionCodeKey][0] || 'N/A';
+      const decisionCode = (check[decisionCodeKey] && check[decisionCodeKey][0]) || 'N/A';
       return {
         checkCode: `${checkCode} - ${checkCodeMapping[checkCode] || 'N/A'}`,
         decisionCode: decisionCode
@@ -138,17 +134,25 @@ function App() {
               btmsCheckCodeObjects = getCode(btmsItem, 'CheckCode', false);
             }
 
-            // Determine match for each check
-            const matches = alvsCheckCodeObjects.map((alvsCheck, index) => {
-              const btmsCheck = btmsCheckCodeObjects[index] || { decisionCode: 'N/A' };
-              return alvsCheck.decisionCode === btmsCheck.decisionCode;
+            const matches = [];
+            alvsCheckCodeObjects.forEach(alvsCheck => {
+              let matchFound = false;
+              btmsCheckCodeObjects.forEach(btmsCheck => {
+                if (alvsCheck.checkCode === btmsCheck.checkCode) {
+                  matches.push(alvsCheck.decisionCode === btmsCheck.decisionCode);
+                  matchFound = true;
+                }
+              });
+              if (!matchFound) {
+                matches.push(false);
+              }
             });
 
             results.push({
               itemNumber: itemNumber,
               alvsCheckCodeObjects: alvsCheckCodeObjects,
               btmsCheckCodeObjects: btmsCheckCodeObjects,
-              matches: matches, // Store the array of matches
+              matches: matches,
             });
           } else {
             results.push({
