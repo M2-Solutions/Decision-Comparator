@@ -13,6 +13,7 @@ const checkCodeMapping = {
 };
 
 function App() {
+  console.log("App component is rendering");
   const initialState = {
     jsonData: null,
     alvsData: null,
@@ -48,7 +49,7 @@ function App() {
   };
 
   const [state, dispatch] = useReducer(reducer, initialState);
-  const { comparisonResults, error, jsonText, id } = state;
+  const { comparisonResults, error, jsonText, id} = state;
 
   const handleError = (message) => {
     dispatch({ type: 'SET_ERROR', payload: message });
@@ -58,39 +59,58 @@ function App() {
     dispatch({ type: 'SET_JSON_TEXT', payload: event.target.value });
   };
 
-  const handleParseJson = () => {
+  const handleParseJson = async () => {
+    console.log("handleParseJson called");
+    let xmlString = "";
     try {
+      console.log("Parsing JSON");
       const data = JSON.parse(jsonText);
       dispatch({ type: 'SET_JSON_DATA', payload: data });
       dispatch({ type: 'SET_ID', payload: data.id });
-
-      parseString(data.latest.alvsXml, (err, result) => {
+      xmlString = data?.latest?.alvsXml;
+      console.log("ALVS XML:", xmlString);
+      const logXml = (xmlString) => {};
+      logXml(xmlString);
+      console.log("Calling parseString for ALVS XML");
+      await parseString(data.latest.alvsXml, (err, result) => {
         if (err) {
+          console.error("Error parsing ALVS XML:", err);
+          console.log("ALVS XML parsing error object:", err);
           handleError("Error parsing ALVS XML: " + err.message);
           return;
         }
         dispatch({ type: 'SET_ALVS_DATA', payload: result });
+        console.log("ALVS XML parsed result:", result);
+        console.log("After parsing ALVS XML");
 
-        parseString(data.latest.btmsXml, (err, btmsResult) => {
-          if (err) {
-            handleError("Error parsing BTMS XML: " + err.message);
-            return;
-          }
+        console.log("Calling parseString for BTMS XML");
+        new Promise((resolve, reject) => {
+          parseString(data?.latest?.btmsXml, (err, btmsResult) => {
+            if (err) {
+              reject(err);
+              return;
+            }
+            resolve(btmsResult);
+          });
+        }).then((btmsResult) => {
           dispatch({ type: 'SET_BTMS_DATA', payload: btmsResult });
 
           const results = compareData(result, btmsResult);
           dispatch({ type: 'SET_COMPARISON_RESULTS', payload: results });
+          console.log("After comparing data");
         });
       });
+      console.log("handleParseJson completed successfully");
     } catch (err) {
+      console.error("Error in handleParseJson:", err);
       handleError("Error parsing JSON: " + err.message);
     }
   };
 
-  const getCode = (item, codeType, isAlvs = true) => {
-    const checkKey = isAlvs ? 'Check' : 'NS2:Check';
-    const codeKey = isAlvs ? codeType : `NS2:${codeType}`;
-    const decisionCodeKey = isAlvs ? 'DecisionCode' : 'NS2:DecisionCode';
+  const getCode = (item, codeType) => {
+    const checkKey = 'NS2:Check';
+    const codeKey = `NS2:${codeType}`;
+    const decisionCodeKey = 'NS2:DecisionCode';
 
     const checks = item[checkKey];
     if (!checks || !Array.isArray(checks)) {
@@ -108,86 +128,177 @@ function App() {
     });
   };
 
-  const compareData = (alvs, btms) => {
-    const alvsItems = alvs['soap:Envelope']['soap:Body'][0]['DecisionNotification'][0]['DecisionNotification'][0]['Item'];
+  const compareData = async (alvs, btms) => {
+    
     let results = [];
 
-    parseString(btms['NS1:Envelope']['NS1:Body'][0]['NS3:DecisionNotification'][0]['_'], (err, parsedBtms) => {
-      if (err) {
-        console.error("Error parsing inner BTMS XML:", err);
-        return;
+    const findDecisionNotification = async (data) => {
+        if (!data) {
+        return null;
       }
-      const btmsItems = parsedBtms['NS2:DecisionNotification']['NS2:Item'];
+      // Correctly traverse the XML structure to find DecisionNotification
+      const body = data['NS1:Envelope']?.['NS1:Body']?.[0];
+      if (!body) {
+        console.warn("findDecisionNotification - NS1:Body not found.");
+        return null;
+      }
 
-      if (alvsItems && btmsItems) {
-        alvsItems.forEach((alvsItem) => {
-          const itemNumber = alvsItem.ItemNumber ? alvsItem.ItemNumber[0] : 'N/A';
-          const alvsCheckCodeObjects = getCode(alvsItem, 'CheckCode', true);
+      const decisionNotification = body['NS3:DecisionNotification']?.[0];
+      if (!decisionNotification) {
+        console.warn("findDecisionNotification - NS3:DecisionNotification not found.");
+        return null;
+      }
+      
+      // Extract inner XML string
+      const decisionNotificationXml = decisionNotification['_'];
+      
+      return decisionNotificationXml;
+    };
 
-          let btmsItem = null;
-          if (btmsItems) {
-            btmsItem = btmsItems.find((btmsItem) => btmsItem['NS2:ItemNumber'] && btmsItem['NS2:ItemNumber'][0] === itemNumber);
+    const alvsDecisionNotification = await findDecisionNotification(alvs);
+    let alvsItems = null;
 
-            let btmsCheckCodeObjects = [{ checkCode: 'N/A', decisionCode: 'N/A' }];
+    if (!alvsDecisionNotification) {
+      console.warn("alvsDecisionNotification is null or undefined.");
+      return results;
+    }
 
-            if (btmsItem) {
-              btmsCheckCodeObjects = getCode(btmsItem, 'CheckCode', false);
-            }
+    // Standardize parsing logic for ALVS XML
+    try {
+      const alvsParseResult = await new Promise((resolve, reject) => {
+        parseString(alvsDecisionNotification, (err, result) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve(result);
+        });
+      });
+      alvsItems = alvsParseResult?.['NS2:DecisionNotification']?.['NS2:Item'];
+    } catch (err) {
+      console.error("Error parsing ALVS DecisionNotification XML:", err);
+      handleError("Error parsing ALVS DecisionNotification XML: " + err.message);
+      return results; // Return early if parsing fails
+    }
+    
+    if (!alvsItems) {
+      console.warn("alvsItems is null or undefined, possibly due to missing DecisionNotification or Item elements in ALVS data.");
+      return results;
+    }
 
-            const matches = [];
-            alvsCheckCodeObjects.forEach(alvsCheck => {
-              let matchFound = false;
-              btmsCheckCodeObjects.forEach(btmsCheck => {
-                if (alvsCheck.checkCode === btmsCheck.checkCode) {
-                  matches.push(alvsCheck.decisionCode === btmsCheck.decisionCode);
-                  matchFound = true;
-                }
-              });
-              if (!matchFound) {
-                matches.push(false);
-              }
-            });
+  const btmsEnvelope = btms['NS1:Envelope'];
+  const btmsBody = btmsEnvelope?.['NS1:Body']?.[0];
+  let btmsDecisionNotification = btmsBody?.['NS3:DecisionNotification']?.[0];
+  let btmsInnerDecisionNotification = null;
+  let btmsItems = null;
 
-            results.push({
-              itemNumber: itemNumber,
-              alvsCheckCodeObjects: alvsCheckCodeObjects,
-              btmsCheckCodeObjects: btmsCheckCodeObjects,
-              matches: matches,
-            });
-          } else {
-            results.push({
-              itemNumber: itemNumber,
-              alvsCheckCodeObjects: alvsCheckCodeObjects,
-              btmsCheckCodeObjects: [{ checkCode: 'N/A', decisionCode: 'N/A' }],
-              matches: [],
-            });
+  // Apply findDecisionNotification to BTMS XML
+  if (btms) {
+    btmsDecisionNotification = await findDecisionNotification(btms);
+    
+    
+  }
+
+  if (btmsDecisionNotification && typeof btmsDecisionNotification === 'string') {
+    try {
+      const btmsParseResult = await new Promise((resolve, reject) => {
+        parseString(btmsDecisionNotification, (err, parsedBtms) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve(parsedBtms);
+        });
+      });
+      btmsInnerDecisionNotification = btmsParseResult?.['NS2:DecisionNotification'];
+      if (btmsInnerDecisionNotification) {
+        btmsItems = btmsInnerDecisionNotification['NS2:Item'] ? btmsInnerDecisionNotification['NS2:Item'] : null;
+      } else {
+        console.warn("btmsInnerDecisionNotification is null or undefined.");
+      }
+    } catch (err) {
+      console.error("Error parsing inner BTMS XML:", err);
+      // Do not return results here, as ALVS data might still be valid for comparison
+  
+    }
+  
+  }
+
+  console.log("btmsBody:", btmsBody);
+  console.log("btmsDecisionNotification:", btmsDecisionNotification);
+  console.log("btmsInnerDecisionNotification:", btmsInnerDecisionNotification);
+  console.log("btmsItems:", btmsItems);
+
+  if (alvsItems) {
+    alvsItems.forEach((alvsItem) => {
+      const itemNumber = alvsItem['NS2:ItemNumber'] ? alvsItem['NS2:ItemNumber'][0] : 'N/A';
+      const alvsCheckCodeObjects = getCode(alvsItem, 'CheckCode');
+      
+      
+
+      let btmsItem = null;
+      let btmsCheckCodeObjects = [{ checkCode: 'N/A', decisionCode: 'N/A' }];
+
+      if (btmsItems) {
+        btmsItem = btmsItems.find((btmsItem) => btmsItem['NS2:ItemNumber'] && btmsItem['NS2:ItemNumber'][0] === itemNumber);
+
+        if (btmsItem) {
+          btmsCheckCodeObjects = getCode(btmsItem, 'CheckCode');
+        }
+      }
+
+      const matches = [];
+      alvsCheckCodeObjects.forEach(alvsCheck => {
+        let matchFound = false;
+        btmsCheckCodeObjects.forEach(btmsCheck => {
+          if (alvsCheck.checkCode === btmsCheck.checkCode) {
+            matches.push(alvsCheck.decisionCode === btmsCheck.decisionCode);
+            matchFound = true;
           }
         });
-      }
-      dispatch({ type: 'SET_COMPARISON_RESULTS', payload: results });
-      console.log("results:", results);
+        if (!matchFound) {
+          matches.push(false);
+        }
+      });
+
+      results.push({
+        itemNumber: itemNumber,
+        alvsCheckCodeObjects: alvsCheckCodeObjects,
+        btmsCheckCodeObjects: btmsCheckCodeObjects,
+        matches: matches,
+      });
+    
     });
+    dispatch({ type: 'SET_COMPARISON_RESULTS', payload: results });
 
     return results;
-  };
+  }
+}
 
+
+  console.log("App component is about to return JSX");
+  console.log("Before rendering the main div");
+  console.log("After rendering comparison results")
   return (
     <div className="App">
       <h1>Decision Comparator</h1>
-      
-      <textarea
-        rows="20"
-        cols="50"
-        placeholder="Paste JSON here"
-        value={jsonText}
-        onChange={handleJsonTextChange}
-      />
-      {error && <p className="error">{error}</p>}
-      <div style={{textAlign: 'center', marginBottom: '20px'}}>
-        <button onClick={handleParseJson}>Compare</button>
-        <button onClick={clearAll}>Clear</button>
+      <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+        <textarea
+          rows="20"
+          cols="50"
+          placeholder="Paste JSON here"
+          value={jsonText}
+          onChange={handleJsonTextChange}
+        />
+        {error && <p className="error">{error}</p>}
+        <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+          <button onClick={async () => {
+            console.log("Compare button clicked");
+            await handleParseJson();
+          }}>Compare</button>
+          <button onClick={clearAll}>Clear</button>
+        </div>
       </div>
-      
       {comparisonResults.length > 0 && (
         <div>
           <h2>Comparison Results for {id}</h2>
@@ -201,29 +312,23 @@ function App() {
                 <th>BTMS Decision Code</th>
                 <th>Match</th>
               </tr>
+              
             </thead>
             <tbody>
-              {comparisonResults.map((result, index) => {
-                const alvsCheckCodeObjects = result.alvsCheckCodeObjects || [];
-                const btmsCheckCodeObjects = result.btmsCheckCodeObjects || [];
-                const matches = result.matches || [];
-
-                return alvsCheckCodeObjects.map((alvsCheck, checkIndex) => {
-                  const btmsCheck = btmsCheckCodeObjects[checkIndex] || { checkCode: 'N/A', decisionCode: 'N/A' };
-                  const match = matches[checkIndex];
-
-                  return (
-                    <tr key={`${index}-${checkIndex}`}>
-                      <td>{result.itemNumber}</td>
-                      <td>{alvsCheck.checkCode}</td>
-                      <td>{alvsCheck.decisionCode}</td>
-                      <td>{btmsCheck.checkCode}</td>
-                      <td>{btmsCheck.decisionCode}</td>
-                      <td className={match ? 'match-true' : 'match-false'}>{match ? 'True' : 'False'}</td>
-                    </tr>
-                  );
-                });
-              })}
+            <React.Fragment>
+              {comparisonResults.map((result, index) => (
+                result.alvsCheckCodeObjects.map((alvsCheck, checkIndex) => (
+                  <tr key={`${index}-${checkIndex}`}>
+                    <td>{result.itemNumber}</td>
+                    <td>{alvsCheck.checkCode}</td>
+                    <td>{alvsCheck.decisionCode}</td>
+                    <td>{result.btmsCheckCodeObjects[checkIndex]?.checkCode || 'N/A'}</td>
+                    <td>{result.btmsCheckCodeObjects[checkIndex]?.decisionCode || 'N/A'}</td>
+                    <td className={`${result.matches[checkIndex] ? 'match-true' : 'match-false'}`}>{result.matches[checkIndex] ? 'True' : 'False'}</td>
+                  </tr>
+                ))
+              ))}
+            </React.Fragment>
             </tbody>
           </table>
         </div>
@@ -238,4 +343,8 @@ function App() {
   }
 }
 
-export default App;
+
+
+  
+
+export default React.memo(App);
